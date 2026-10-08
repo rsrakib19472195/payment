@@ -1,7 +1,6 @@
 const express = require("express");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const cors = require("cors");
 const crypto = require("crypto");
 const admin = require("firebase-admin");
 
@@ -9,116 +8,102 @@ const app = express();
 
 app.disable("x-powered-by");
 
+app.use(helmet());
+
 app.use(
-  cors({
-    origin: true,
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"]
+  express.json({
+    limit: "16kb"
   })
 );
 
-app.use(
-  helmet({
-    crossOriginResourcePolicy: false
-  })
-);
+const API_KEY =
+  process.env.TWIXO_API_KEY;
 
-app.use(express.json({ limit: "16kb" }));
+const SERVICE_ACCOUNT =
+  process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
-const API_KEY = process.env.TWIXO_API_KEY;
-const SERVICE_ACCOUNT = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-
-if (!API_KEY) {
-  throw new Error("TWIXO_API_KEY environment variable is missing");
+if (!API_KEY || !SERVICE_ACCOUNT) {
+  throw new Error(
+    "Required environment variables are missing"
+  );
 }
 
-if (!SERVICE_ACCOUNT) {
-  throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON environment variable is missing");
-}
+admin.initializeApp({
+  credential:
+    admin.credential.cert(
+      JSON.parse(SERVICE_ACCOUNT)
+    )
+});
 
-let serviceAccount;
+const db =
+  admin.firestore();
 
-try {
-  serviceAccount = JSON.parse(SERVICE_ACCOUNT);
-} catch (error) {
-  throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON");
-}
+const FieldValue =
+  admin.firestore.FieldValue;
 
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-}
 
-const db = admin.firestore();
-
-/* =========================
-   BASIC HELPERS
-========================= */
-
-function normalizeTrxId(value) {
-  return String(value || "").trim().toUpperCase();
-}
-
-function normalizeAmount(value) {
-  const n = Number(String(value || "").replace(/[^\d.]/g, ""));
-  if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100) / 100;
-}
-
-function cleanString(value, max = 500) {
-  return String(value || "").trim().slice(0, max);
-}
-
-/* =========================
+/* =========================================================
    HEALTH
-========================= */
+========================================================= */
 
-app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    service: "AURA SKILL Payment API",
-    status: "online"
-  });
-});
+app.get(
+  "/health",
+  (req, res) => {
 
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    service: "AURA SKILL Payment API",
-    status: "online",
-    time: new Date().toISOString()
-  });
-});
+    res.json({
+      ok: true,
+      service: "AURA SKILL Payment API",
+      status: "online",
+      time: new Date().toISOString()
+    });
 
-/* =========================
-   MACRODROID → FIRESTORE
-========================= */
+  }
+);
+
+
+/* =========================================================
+   MACRODROID MESSAGE SAVE
+========================================================= */
 
 app.post(
   "/api/messages",
+
   rateLimit({
     windowMs: 60 * 1000,
-    limit: 30,
+    limit: 20,
     standardHeaders: true,
     legacyHeaders: false
   }),
-  async (req, res) => {
-    try {
-      const suppliedKey = req.get("X-API-Key") || "";
 
-      const expected = Buffer.from(API_KEY);
-      const supplied = Buffer.from(suppliedKey);
+  async (req, res) => {
+
+    try {
+
+      const suppliedKey =
+        req.get("X-API-Key") || "";
+
+      const expected =
+        Buffer.from(API_KEY);
+
+      const supplied =
+        Buffer.from(suppliedKey);
 
       if (
-        supplied.length !== expected.length ||
-        !crypto.timingSafeEqual(supplied, expected)
+        supplied.length !==
+          expected.length ||
+        !crypto.timingSafeEqual(
+          supplied,
+          expected
+        )
       ) {
+
         return res.status(401).json({
           ok: false,
           error: "Invalid API key"
         });
+
       }
+
 
       const {
         consent,
@@ -130,530 +115,1052 @@ app.post(
         trx_time
       } = req.body || {};
 
+
       if (consent !== true) {
+
         return res.status(403).json({
           ok: false,
-          error: "Explicit consent required"
+          error:
+            "Explicit consent required"
         });
+
       }
+
 
       if (
         typeof message !== "string" ||
-        message.trim().length === 0 ||
+        !message.trim() ||
         message.length > 3000
       ) {
+
         return res.status(400).json({
           ok: false,
           error: "Invalid message"
         });
+
       }
+
 
       if (
         sender !== undefined &&
-        (typeof sender !== "string" || sender.length > 100)
+        (
+          typeof sender !== "string" ||
+          sender.length > 100
+        )
       ) {
+
         return res.status(400).json({
           ok: false,
           error: "Invalid sender"
         });
+
       }
 
-      if (!["sms", "transaction", "test"].includes(type)) {
+
+      if (
+        ![
+          "sms",
+          "transaction",
+          "test"
+        ].includes(type)
+      ) {
+
         return res.status(400).json({
           ok: false,
           error: "Invalid message type"
         });
+
       }
 
-      const ref = await db.collection("twixoMessages").add({
-        message: message.trim(),
-        sender: cleanString(sender, 100),
-        type,
-        consent: true,
-        amount: cleanString(amount, 50),
-        trx_id: cleanString(trx_id, 150),
-        trx_time: cleanString(trx_time, 100),
-        receivedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
+
+      const ref =
+        await db
+          .collection("twixoMessages")
+          .add({
+
+            message:
+              message.trim(),
+
+            sender:
+              sender || "",
+
+            type,
+
+            consent: true,
+
+            amount:
+              amount || "",
+
+            trx_id:
+              trx_id || "",
+
+            trx_time:
+              trx_time || "",
+
+            receivedAt:
+              FieldValue.serverTimestamp()
+
+          });
+
 
       return res.status(201).json({
+
         ok: true,
+
         id: ref.id,
-        message: "Saved to Firestore"
+
+        message:
+          "Saved to Firestore"
+
       });
+
+
     } catch (error) {
-      console.error("MESSAGE API ERROR:", error);
+
+      console.error(
+        "TWIXO API error:",
+        error.code ||
+          "internal"
+      );
 
       return res.status(500).json({
+
         ok: false,
-        error: "Could not save message"
+
+        error:
+          "Could not save message"
+
       });
+
     }
+
   }
 );
 
-/* =========================
+
+/* =========================================================
    FIREBASE AUTH MIDDLEWARE
-========================= */
+========================================================= */
 
-async function requireFirebaseUser(req, res, next) {
+async function authenticateFirebaseUser(
+  req,
+  res,
+  next
+){
+
   try {
-    const header = req.get("Authorization") || "";
 
-    if (!header.startsWith("Bearer ")) {
+    const header =
+      req.get("Authorization") || "";
+
+
+    if (
+      !header.startsWith(
+        "Bearer "
+      )
+    ) {
+
       return res.status(401).json({
+
         ok: false,
-        error: "Missing Firebase ID token"
+
+        status:
+          "unauthorized",
+
+        error:
+          "Firebase login required"
+
       });
+
     }
 
-    const idToken = header.substring(7).trim();
+
+    const idToken =
+      header.substring(7).trim();
+
 
     if (!idToken) {
+
       return res.status(401).json({
+
         ok: false,
-        error: "Invalid Firebase ID token"
+
+        status:
+          "unauthorized",
+
+        error:
+          "Missing Firebase ID token"
+
       });
+
     }
 
-    const decoded = await admin.auth().verifyIdToken(idToken);
 
-    req.user = decoded;
+    const decoded =
+      await admin
+        .auth()
+        .verifyIdToken(
+          idToken
+        );
+
+
+    req.firebaseUser =
+      decoded;
+
 
     next();
+
+
   } catch (error) {
-    console.error("AUTH ERROR:", error.code || error.message);
+
+    console.error(
+      "Firebase auth error:",
+      error.code ||
+        "invalid-token"
+    );
+
 
     return res.status(401).json({
+
       ok: false,
-      error: "Authentication failed"
+
+      status:
+        "unauthorized",
+
+      error:
+        "Invalid or expired login session"
+
     });
+
   }
+
 }
 
-/* =========================
-   CHECK DUPLICATE TRXID
-========================= */
 
-async function transactionAlreadyExists(trxId) {
-  const snap = await db
-    .collection("transactions")
-    .where("trxId", "==", trxId)
-    .limit(1)
-    .get();
-
-  return !snap.empty;
-}
-
-/* =========================
-   VERIFY PAYMENT
-========================= */
+/* =========================================================
+   PAYMENT VERIFY
+========================================================= */
 
 app.post(
   "/api/verify-payment",
+
   rateLimit({
     windowMs: 60 * 1000,
-    limit: 15,
+    limit: 10,
     standardHeaders: true,
     legacyHeaders: false
   }),
-  requireFirebaseUser,
+
+  authenticateFirebaseUser,
+
   async (req, res) => {
+
     try {
-      const uid = req.user.uid;
 
-      const trxId = normalizeTrxId(req.body?.trxId);
-      const requestedAmount = normalizeAmount(req.body?.amount);
-      const gateway = cleanString(req.body?.gateway, 50);
-      const invoice = cleanString(req.body?.invoice, 150);
+      const user =
+        req.firebaseUser;
 
-      if (!trxId) {
+
+      const uid =
+        user.uid;
+
+
+      const email =
+        user.email || "";
+
+
+      let {
+        trxId,
+        amount,
+        gateway,
+        invoice
+      } = req.body || {};
+
+
+      trxId =
+        String(
+          trxId || ""
+        ).trim();
+
+
+      amount =
+        Number(amount);
+
+
+      gateway =
+        String(
+          gateway || ""
+        ).trim();
+
+
+      invoice =
+        String(
+          invoice || ""
+        ).trim();
+
+
+      /* ================================================
+         BASIC VALIDATION
+      ================================================ */
+
+      if (
+        !trxId ||
+        trxId.length < 4 ||
+        trxId.length > 100
+      ) {
+
         return res.status(400).json({
+
           ok: false,
-          error: "Transaction ID is required"
-        });
-      }
 
-      if (requestedAmount === null || requestedAmount <= 0) {
-        return res.status(400).json({
-          ok: false,
-          error: "Invalid payment amount"
-        });
-      }
+          status:
+            "invalid",
 
-      if (!gateway) {
-        return res.status(400).json({
-          ok: false,
-          error: "Payment gateway is required"
-        });
-      }
-
-      /* =========================
-         DUPLICATE CHECK
-      ========================= */
-
-      const alreadyUsed = await transactionAlreadyExists(trxId);
-
-      if (alreadyUsed) {
-        return res.status(409).json({
-          ok: false,
-          status: "duplicate",
-          error: "এই Transaction ID ইতোমধ্যে ব্যবহার করা হয়েছে।"
-        });
-      }
-
-      /* =========================
-         SEARCH TWIXO MESSAGES
-      ========================= */
-
-      const messageSnap = await db
-        .collection("twixoMessages")
-        .where("trx_id", "==", trxId)
-        .limit(10)
-        .get();
-
-      if (messageSnap.empty) {
-        const reviewRef = await db.collection("transactions").add({
-          uid,
-          trxId,
-          amount: requestedAmount,
-          gateway,
-          invoice,
-          status: "review",
-          reviewRequested: true,
-          reviewReason: "Transaction ID not found in payment records",
-          source: "payment_verification",
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        return res.status(200).json({
-          ok: true,
-          status: "not_found",
-          transactionId: reviewRef.id,
-          message:
-            "এই Transaction ID-এর কোনো payment record পাওয়া যায়নি। Admin Review প্রয়োজন।"
-        });
-      }
-
-      /* =========================
-         FIND AMOUNT MATCH
-      ========================= */
-
-      let matchedMessage = null;
-
-      for (const doc of messageSnap.docs) {
-        const data = doc.data() || {};
-
-        const savedAmount = normalizeAmount(data.amount);
-
-        if (
-          savedAmount !== null &&
-          savedAmount === requestedAmount
-        ) {
-          matchedMessage = {
-            id: doc.id,
-            data
-          };
-
-          break;
-        }
-      }
-
-      /* =========================
-         AMOUNT MISMATCH
-      ========================= */
-
-      if (!matchedMessage) {
-        const firstData = messageSnap.docs[0].data() || {};
-
-        const foundAmount = normalizeAmount(firstData.amount);
-
-        return res.status(200).json({
-          ok: false,
-          status: "amount_mismatch",
-          requestedAmount,
-          foundAmount,
           error:
-            "Transaction ID পাওয়া গেছে, কিন্তু payment amount match করেনি।"
+            "Invalid Transaction ID"
+
         });
+
       }
 
-      /* =========================
-         ATOMIC TRANSACTION
-      ========================= */
 
-      const result = await db.runTransaction(async (transaction) => {
-        const duplicateQuery = await db
+      if (
+        !Number.isFinite(amount) ||
+        amount < 10 ||
+        amount > 10000000
+      ) {
+
+        return res.status(400).json({
+
+          ok: false,
+
+          status:
+            "invalid",
+
+          error:
+            "Invalid payment amount"
+
+        });
+
+      }
+
+
+      if (
+        ![
+          "Bkash",
+          "Nagad"
+        ].includes(gateway)
+      ) {
+
+        return res.status(400).json({
+
+          ok: false,
+
+          status:
+            "invalid",
+
+          error:
+            "Invalid payment gateway"
+
+        });
+
+      }
+
+
+      const requestedAmount =
+        Math.round(
+          amount * 100
+        ) / 100;
+
+
+      /* ================================================
+         SAME TRXID CHECK
+         ANY USER / ANY GATEWAY
+         ================================================ */
+
+      const existingTxSnap =
+        await db
           .collection("transactions")
-          .where("trxId", "==", trxId)
+          .where(
+            "trxId",
+            "==",
+            trxId
+          )
           .limit(1)
           .get();
 
-        if (!duplicateQuery.empty) {
-          throw new Error("DUPLICATE_TRX");
+
+      if (
+        !existingTxSnap.empty
+      ) {
+
+        return res.status(409).json({
+
+          ok: false,
+
+          status:
+            "duplicate",
+
+          error:
+            "এই TrxID ইতিমধ্যে ব্যবহার করা হয়েছে। একই TrxID দ্বিতীয়বার ব্যবহার করা যাবে না।"
+
+        });
+
+      }
+
+
+      /* ================================================
+         FIND MACRODROID MESSAGE
+      ================================================ */
+
+      const messageSnap =
+        await db
+          .collection("twixoMessages")
+          .where(
+            "trx_id",
+            "==",
+            trxId
+          )
+          .limit(20)
+          .get();
+
+
+      if (
+        messageSnap.empty
+      ) {
+
+        /* ============================================
+           CREATE REVIEW TRANSACTION
+        ============================================ */
+
+        const reviewRef =
+          db
+            .collection("transactions")
+            .doc();
+
+
+        await reviewRef.set({
+
+          userId:
+            uid,
+
+          userEmail:
+            email,
+
+          userName:
+            user.name ||
+            user.email?.split("@")[0] ||
+            "User",
+
+          amount:
+            requestedAmount,
+
+          fee: 0,
+
+          total:
+            requestedAmount,
+
+          gateway,
+
+          method:
+            gateway,
+
+          trxId,
+
+          transactionId:
+            reviewRef.id,
+
+          invoice,
+
+          status:
+            "review",
+
+          reviewReason:
+            "TrxID not found in MacroDroid payment messages.",
+
+          source:
+            "automatic-payment-verification",
+
+          createdAt:
+            FieldValue.serverTimestamp(),
+
+          updatedAt:
+            FieldValue.serverTimestamp()
+
+        });
+
+
+        return res.status(200).json({
+
+          ok: false,
+
+          status:
+            "not_found",
+
+          transactionId:
+            reviewRef.id,
+
+          error:
+            "এই TrxID MacroDroid payment notification system-এ পাওয়া যায়নি।"
+
+        });
+
+      }
+
+
+      /* ================================================
+         CHECK ALL MATCH CONDITIONS
+      ================================================ */
+
+      let matchedMessage =
+        null;
+
+      let amountMismatch =
+        false;
+
+      let messageMismatch =
+        false;
+
+
+      for (
+        const docSnap
+        of messageSnap.docs
+      ) {
+
+        const data =
+          docSnap.data() || {};
+
+
+        const storedAmount =
+          Number(
+            String(
+              data.amount || ""
+            )
+            .replace(
+              /,/g,
+              ""
+            )
+          );
+
+
+        const storedMessage =
+          String(
+            data.message || ""
+          )
+          .trim()
+          .toLowerCase();
+
+
+        const storedType =
+          String(
+            data.type || ""
+          )
+          .trim()
+          .toLowerCase();
+
+
+        const consent =
+          data.consent === true;
+
+
+        /* ==========================================
+           MESSAGE CHECK
+        ========================================== */
+
+        let expectedMessage;
+
+
+        if (
+          gateway ===
+          "Nagad"
+        ) {
+
+          expectedMessage =
+            "nagad transaction";
+
+        } else {
+
+          expectedMessage =
+            "bkash transaction";
+
         }
 
-        const userRef = db.collection("users").doc(uid);
 
-        const userSnap = await transaction.get(userRef);
+        const messageOk =
+          storedMessage ===
+            expectedMessage ||
+          storedMessage.includes(
+            expectedMessage
+          );
 
-        if (!userSnap.exists) {
-          throw new Error("USER_NOT_FOUND");
+
+        const amountOk =
+          Number.isFinite(
+            storedAmount
+          ) &&
+          Math.abs(
+            storedAmount -
+              requestedAmount
+          ) < 0.001;
+
+
+        const typeOk =
+          storedType ===
+            "sms" ||
+          storedType ===
+            "transaction";
+
+
+        if (
+          !amountOk
+        ) {
+
+          amountMismatch =
+            true;
+
         }
 
-        const userData = userSnap.data() || {};
 
-        const currentBalance = normalizeAmount(
-          userData.balance ?? userData.wallet ?? 0
+        if (
+          !messageOk
+        ) {
+
+          messageMismatch =
+            true;
+
+        }
+
+
+        if (
+          amountOk &&
+          messageOk &&
+          typeOk &&
+          consent
+        ) {
+
+          matchedMessage = {
+
+            id:
+              docSnap.id,
+
+            ...data
+
+          };
+
+          break;
+
+        }
+
+      }
+
+
+      /* ================================================
+         TRX FOUND BUT AMOUNT/MESSAGE WRONG
+      ================================================ */
+
+      if (
+        !matchedMessage
+      ) {
+
+        if (
+          amountMismatch
+        ) {
+
+          return res.status(200).json({
+
+            ok: false,
+
+            status:
+              "amount_mismatch",
+
+            error:
+              "Payment notification পাওয়া গেছে, কিন্তু Amount মেলেনি।"
+
+          });
+
+        }
+
+
+        if (
+          messageMismatch
+        ) {
+
+          return res.status(200).json({
+
+            ok: false,
+
+            status:
+              "message_mismatch",
+
+            error:
+              "TrxID পাওয়া গেছে, কিন্তু MacroDroid payment message match করেনি।"
+
+          });
+
+        }
+
+
+        return res.status(200).json({
+
+          ok: false,
+
+          status:
+            "not_found",
+
+          error:
+            "Valid payment notification match পাওয়া যায়নি।"
+
+        });
+
+      }
+
+
+      /* ================================================
+         EXTRACT MACRO DATA
+      ================================================ */
+
+      const sender =
+        String(
+          matchedMessage.sender ||
+          ""
         );
 
-        const safeBalance =
-          currentBalance === null ? 0 : currentBalance;
 
-        const newBalance =
-          Math.round((safeBalance + requestedAmount) * 100) / 100;
+      const trxTime =
+        String(
+          matchedMessage.trx_time ||
+          ""
+        );
 
-        const txRef = db.collection("transactions").doc();
 
-        transaction.set(txRef, {
-          uid,
-          trxId,
-          amount: requestedAmount,
-          gateway,
-          invoice,
-          status: "approved",
-          verified: true,
-          autoVerified: true,
-          walletAdded: requestedAmount,
-          source: "payment_verification",
-          paymentMessageId: matchedMessage.id,
-          paymentSender:
-            matchedMessage.data.sender || "",
-          paymentTime:
-            matchedMessage.data.trx_time || "",
-          createdAt:
-            admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt:
-            admin.firestore.FieldValue.serverTimestamp(),
-          verifiedAt:
-            admin.firestore.FieldValue.serverTimestamp()
-        });
+      const verifiedAmount =
+        Math.round(
+          Number(
+            matchedMessage.amount
+          ) * 100
+        ) / 100;
 
-        transaction.update(userRef, {
-          balance: newBalance,
-          updatedAt:
-            admin.firestore.FieldValue.serverTimestamp()
-        });
 
-        return {
-          transactionId: txRef.id,
-          newBalance
-        };
-      });
+      /* ================================================
+         ATOMIC WALLET + TRANSACTION
+      ================================================ */
+
+      const userRef =
+        db
+          .collection("users")
+          .doc(uid);
+
+
+      const transactionRef =
+        db
+          .collection("transactions")
+          .doc();
+
+
+      let balanceBefore = 0;
+
+      let balanceAfter = 0;
+
+
+      await db.runTransaction(
+        async transaction => {
+
+          /* ==========================================
+             RE-CHECK TRXID INSIDE ATOMIC TRANSACTION
+          ========================================== */
+
+          const duplicateSnap =
+            await transaction.get(
+              db
+                .collection(
+                  "transactions"
+                )
+                .where(
+                  "trxId",
+                  "==",
+                  trxId
+                )
+                .limit(1)
+            );
+
+
+          if (
+            !duplicateSnap.empty
+          ) {
+
+            throw new Error(
+              "DUPLICATE_TRXID"
+            );
+
+          }
+
+
+          const userSnap =
+            await transaction.get(
+              userRef
+            );
+
+
+          if (
+            !userSnap.exists
+          ) {
+
+            throw new Error(
+              "USER_NOT_FOUND"
+            );
+
+          }
+
+
+          const userData =
+            userSnap.data() || {};
+
+
+          balanceBefore =
+            Number(
+              userData.balance || 0
+            );
+
+
+          if (
+            !Number.isFinite(
+              balanceBefore
+            )
+          ) {
+
+            balanceBefore =
+              0;
+
+          }
+
+
+          balanceAfter =
+            Math.round(
+              (
+                balanceBefore +
+                verifiedAmount
+              ) * 100
+            ) / 100;
+
+
+          /* ==========================================
+             UPDATE USER WALLET
+          ========================================== */
+
+          transaction.update(
+            userRef,
+            {
+
+              balance:
+                balanceAfter,
+
+              updatedAt:
+                FieldValue.serverTimestamp()
+
+            }
+          );
+
+
+          /* ==========================================
+             CREATE APPROVED TRANSACTION
+          ========================================== */
+
+          transaction.set(
+            transactionRef,
+            {
+
+              userId:
+                uid,
+
+              userEmail:
+                email,
+
+              userName:
+                user.name ||
+                user.email?.split("@")[0] ||
+                "User",
+
+              amount:
+                verifiedAmount,
+
+              fee: 0,
+
+              total:
+                verifiedAmount,
+
+              gateway,
+
+              method:
+                gateway,
+
+              trxId,
+
+              transactionId:
+                transactionRef.id,
+
+              invoice,
+
+              status:
+                "approved",
+
+              verified:
+                true,
+
+              autoVerified:
+                true,
+
+              source:
+                "macrodroid",
+
+              messageId:
+                matchedMessage.id,
+
+              sender,
+
+              trxTime,
+
+              message:
+                matchedMessage.message ||
+                "",
+
+              balanceBefore,
+
+              balanceAfter,
+
+              createdAt:
+                FieldValue.serverTimestamp(),
+
+              updatedAt:
+                FieldValue.serverTimestamp(),
+
+              approvedAt:
+                FieldValue.serverTimestamp()
+
+            }
+          );
+
+        }
+      );
+
+
+      /* ================================================
+         SUCCESS
+      ================================================ */
 
       return res.status(200).json({
+
         ok: true,
-        status: "approved",
-        transactionId: result.transactionId,
-        amount: requestedAmount,
-        walletAdded: requestedAmount,
-        newBalance: result.newBalance,
+
+        status:
+          "approved",
+
+        transactionId:
+          transactionRef.id,
+
         trxId,
+
+        amount:
+          verifiedAmount,
+
         gateway,
-        invoice,
-        message:
-          "Payment verified and wallet updated successfully."
+
+        sender,
+
+        trxTime,
+
+        balanceBefore,
+
+        balanceAfter,
+
+        walletAdded:
+          verifiedAmount
+
       });
+
+
     } catch (error) {
+
       console.error(
         "VERIFY PAYMENT ERROR:",
-        error.code || error.message
+        error.message ||
+          error
       );
 
-      if (error.message === "DUPLICATE_TRX") {
+
+      if (
+        error.message ===
+        "DUPLICATE_TRXID"
+      ) {
+
         return res.status(409).json({
+
           ok: false,
-          status: "duplicate",
+
+          status:
+            "duplicate",
+
           error:
-            "এই Transaction ID ইতোমধ্যে ব্যবহার করা হয়েছে।"
+            "এই TrxID ইতিমধ্যে ব্যবহার করা হয়েছে।"
+
         });
+
       }
 
-      if (error.message === "USER_NOT_FOUND") {
+
+      if (
+        error.message ===
+        "USER_NOT_FOUND"
+      ) {
+
         return res.status(404).json({
+
           ok: false,
-          error: "User account not found"
+
+          status:
+            "user_not_found",
+
+          error:
+            "User wallet পাওয়া যায়নি।"
+
         });
+
       }
+
 
       return res.status(500).json({
+
         ok: false,
+
+        status:
+          "server_error",
+
         error:
-          "Server payment verification করতে পারেনি।"
+          "Payment verification failed."
+
       });
+
     }
+
   }
 );
 
-/* =========================
-   ADMIN REVIEW APPROVE
-   =========================
-   This endpoint is intentionally kept separate.
-   Admin authentication should be added according
-   to your existing admin system before production use.
-========================= */
 
-app.post(
-  "/api/admin/review/approve",
-  async (req, res) => {
-    try {
-      const {
-        transactionId
-      } = req.body || {};
+/* =========================================================
+   SERVER
+========================================================= */
 
-      if (!transactionId) {
-        return res.status(400).json({
-          ok: false,
-          error: "Transaction ID required"
-        });
-      }
+const port =
+  process.env.PORT || 3000;
 
-      const txRef = db
-        .collection("transactions")
-        .doc(transactionId);
 
-      const txSnap = await txRef.get();
+app.listen(
+  port,
+  "0.0.0.0",
+  () => {
 
-      if (!txSnap.exists) {
-        return res.status(404).json({
-          ok: false,
-          error: "Review transaction not found"
-        });
-      }
+    console.log(
+      `AURA SKILL Payment API listening on ${port}`
+    );
 
-      const tx = txSnap.data() || {};
-
-      if (tx.status === "approved") {
-        return res.status(409).json({
-          ok: false,
-          error: "Transaction already approved"
-        });
-      }
-
-      if (tx.status === "rejected") {
-        return res.status(409).json({
-          ok: false,
-          error: "Transaction already rejected"
-        });
-      }
-
-      const uid = tx.uid;
-      const amount = normalizeAmount(tx.amount);
-
-      if (!uid || amount === null) {
-        return res.status(400).json({
-          ok: false,
-          error: "Invalid review transaction"
-        });
-      }
-
-      const result = await db.runTransaction(async (transaction) => {
-        const userRef = db.collection("users").doc(uid);
-
-        const userSnap = await transaction.get(userRef);
-
-        if (!userSnap.exists) {
-          throw new Error("USER_NOT_FOUND");
-        }
-
-        const user = userSnap.data() || {};
-
-        const oldBalance =
-          normalizeAmount(
-            user.balance ?? user.wallet ?? 0
-          ) || 0;
-
-        const newBalance =
-          Math.round((oldBalance + amount) * 100) / 100;
-
-        transaction.update(txRef, {
-          status: "approved",
-          verified: true,
-          walletAdded: amount,
-          approvedManually: true,
-          updatedAt:
-            admin.firestore.FieldValue.serverTimestamp(),
-          approvedAt:
-            admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        transaction.update(userRef, {
-          balance: newBalance,
-          updatedAt:
-            admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        return newBalance;
-      });
-
-      return res.json({
-        ok: true,
-        status: "approved",
-        walletAdded: amount,
-        newBalance: result
-      });
-    } catch (error) {
-      console.error(
-        "ADMIN APPROVE ERROR:",
-        error.code || error.message
-      );
-
-      return res.status(500).json({
-        ok: false,
-        error: "Could not approve review"
-      });
-    }
   }
 );
-
-/* =========================
-   404
-========================= */
-
-app.use((req, res) => {
-  res.status(404).json({
-    ok: false,
-    error: "Endpoint not found",
-    path: req.path
-  });
-});
-
-/* =========================
-   GLOBAL ERROR HANDLER
-========================= */
-
-app.use((error, req, res, next) => {
-  console.error("GLOBAL ERROR:", error);
-
-  if (res.headersSent) {
-    return next(error);
-  }
-
-  res.status(500).json({
-    ok: false,
-    error: "Internal server error"
-  });
-});
-
-/* =========================
-   START
-========================= */
-
-const port = process.env.PORT || 3000;
-
-app.listen(port, "0.0.0.0", () => {
-  console.log(
-    `AURA SKILL Payment API running on port ${port}`
-  );
-});
