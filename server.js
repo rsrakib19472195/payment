@@ -52,7 +52,7 @@ app.post(
         });
       }
 
-      const { consent, message, sender, type } = req.body || {};
+      const { consent, message, sender, type, amount, trx_id, trx_time } = req.body || {};
 
       if (consent !== true) {
         return res.status(403).json({
