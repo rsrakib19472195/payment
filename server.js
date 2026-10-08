@@ -89,13 +89,16 @@ app.post(
         });
       }
 
-      const ref = await db.collection("twixoMessages").add({
-        message: message.trim(),
-        sender: sender || "",
-        type,
-        consent: true,
-        receivedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
+const ref = await db.collection("twixoMessages").add({
+  message: message.trim(),
+  sender: sender || "",
+  type,
+  consent: true,
+  amount: amount || "",
+  trx_id: trx_id || "",
+  trx_time: trx_time || "",
+  receivedAt: admin.firestore.FieldValue.serverTimestamp()
+});
 
       return res.status(201).json({
         ok: true,
