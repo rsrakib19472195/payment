@@ -1,0 +1,261 @@
+
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TWIXO • Firestore Test</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080d18;color:#f4f7ff;font-family:Arial,sans-serif;padding:20px}
+main{max-width:650px;margin:auto}
+.card{background:#111b2d;border:1px solid #293750;border-radius:18px;padding:20px;margin:15px 0}
+h1{margin:0 0 8px;color:#76e4ff}
+p,.muted{color:#aab8d0;font-size:14px;line-height:1.6}
+label{display:block;margin:15px 0 7px}
+input,textarea,select{width:100%;padding:12px;border-radius:10px;border:1px solid #354662;background:#0a1322;color:white;font-size:15px}
+textarea{min-height:100px;resize:vertical}
+button{border:0;border-radius:10px;padding:12px 15px;background:#58dcff;color:#06111b;font-weight:bold;cursor:pointer;margin:8px 5px 0 0}
+button.danger{background:#ff6b79}
+button.secondary{background:#263a55;color:white}
+button:disabled{opacity:.5}
+.check{display:flex;gap:10px;align-items:flex-start}
+.check input{width:auto;margin-top:4px}
+.item{border:1px solid #2c3e58;padding:14px;border-radius:12px;margin-top:12px;overflow-wrap:anywhere}
+.item pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#d6e3f8}
+.status{padding:10px;border-radius:9px;background:#0a1322;overflow-wrap:anywhere}
+small{color:#9cacc4}
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>TWIXO</h1>
+    <strong>Firestore Database Test</strong>
+    <p>নিজে নির্বাচন করা SMS বা Transaction তথ্য পরীক্ষা করে সংরক্ষণ করুন। কোনো SMS স্বয়ংক্রিয়ভাবে পড়া হয় না।</p>
+    <div class="status" id="status">Firebase সংযোগ হচ্ছে...</div>
+    <p id="userInfo">Authentication শুরু হচ্ছে...</p>
+  </div>
+
+  <div class="card">
+    <h3>নতুন রেকর্ড সংরক্ষণ</h3>
+
+    <label for="kind">ডেটার ধরন</label>
+    <select id="kind">
+      <option value="transaction">Transaction</option>
+      <option value="sms">SMS (ম্যানুয়ালি দেওয়া)</option>
+    </select>
+
+    <label for="sender">Sender / উৎস</label>
+    <input id="sender" maxlength="100" placeholder="যেমন: Transaction provider">
+
+    <label for="body">ডেটা / মেসেজ</label>
+    <textarea id="body" maxlength="3000" placeholder="শুধু পরীক্ষার জন্য ডেটা লিখুন"></textarea>
+
+    <label class="check">
+      <input type="checkbox" id="consent">
+      <span>আমি বুঝেছি যে এই ডেটা আমার Firebase Firestore-এ সংরক্ষিত হবে। আমি এই নির্দিষ্ট রেকর্ডটি Sync করতে সম্মতি দিচ্ছি।</span>
+    </label>
+
+    <button id="saveBtn" disabled>Save to Firestore</button>
+    <button id="refreshBtn" class="secondary" disabled>Refresh Records</button>
+    <p class="muted">পরীক্ষার জন্য ব্যক্তিগত SMS-এর বদলে dummy data ব্যবহার করো।</p>
+  </div>
+
+  <div class="card">
+    <h3>সংরক্ষিত রেকর্ড</h3>
+    <div id="records" class="muted">ডেটা লোড হচ্ছে...</div>
+  </div>
+</main>
+
+<script type="module">
+import { initializeApp }
+  from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+
+import {
+  getAuth,
+  signInAnonymously
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  serverTimestamp,
+  deleteDoc,
+  doc
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA2wYMZAMx6p2GRC21KGgsHgiVzCoVz--81A",
+  authDomain: "aura-arman-tour.firebaseapp.com",
+  databaseURL: "https://aura-arman-tour-default-rtdb.firebaseio.com",
+  projectId: "aura-arman-tour",
+  storageBucket: "aura-arman-tour.firebasestorage.app",
+  messagingSenderId: "502326798792",
+  appId: "1:502326798792:web:2afd27cb9cd44da48cb8fd"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const $ = id => document.getElementById(id);
+
+let currentUser = null;
+
+function status(message) {
+  $("status").textContent = message;
+}
+
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
+}
+
+async function start() {
+  try {
+    status("Firebase Authentication শুরু হচ্ছে...");
+
+    // Anonymous Authentication অবশ্যই Firebase Console-এ Enable করতে হবে।
+    const credential = await signInAnonymously(auth);
+    currentUser = credential.user;
+
+    $("userInfo").textContent =
+      "Anonymous test user ID: " + currentUser.uid;
+
+    $("saveBtn").disabled = false;
+    $("refreshBtn").disabled = false;
+
+    status("Firebase সংযুক্ত হয়েছে।");
+    await loadRecords();
+  } catch (error) {
+    console.error(error);
+    status("সংযোগ ব্যর্থ: " + error.message);
+    $("records").textContent =
+      "Authentication ও Firestore Rules পরীক্ষা করুন।";
+  }
+}
+
+async function saveRecord() {
+  if (!currentUser) {
+    status("Authentication সম্পন্ন হয়নি।");
+    return;
+  }
+
+  if (!$("consent").checked) {
+    status("প্রথমে Sync করার সম্মতি দিন।");
+    return;
+  }
+
+  const kind = $("kind").value;
+  const sender = $("sender").value.trim();
+  const body = $("body").value.trim();
+
+  if (!body) {
+    status("ডেটা লিখুন।");
+    return;
+  }
+
+  if (body.length > 3000 || sender.length > 100) {
+    status("ডেটার দৈর্ঘ্য সীমা অতিক্রম করেছে।");
+    return;
+  }
+
+  $("saveBtn").disabled = true;
+
+  try {
+    await addDoc(collection(db, "twixoTestRecords"), {
+      uid: currentUser.uid,
+      kind,
+      sender,
+      body,
+      createdAt: serverTimestamp()
+    });
+
+    $("sender").value = "";
+    $("body").value = "";
+    $("consent").checked = false;
+
+    status("ডেটা Firestore-এ সংরক্ষিত হয়েছে।");
+    await loadRecords();
+  } catch (error) {
+    console.error(error);
+    status("Save ব্যর্থ: " + error.message);
+  } finally {
+    $("saveBtn").disabled = false;
+  }
+}
+
+async function loadRecords() {
+  if (!currentUser) return;
+
+  $("records").textContent = "লোড হচ্ছে...";
+
+  try {
+    const q = query(
+      collection(db, "twixoTestRecords"),
+      where("uid", "==", currentUser.uid)
+    );
+
+    const snapshot = await getDocs(q);
+
+    if (snapshot.empty) {
+      $("records").textContent = "কোনো রেকর্ড পাওয়া যায়নি।";
+      return;
+    }
+
+    $("records").innerHTML = "";
+
+    snapshot.forEach(record => {
+      const data = record.data();
+      const item = document.createElement("div");
+      item.className = "item";
+
+      item.innerHTML = `
+        <strong>${escapeHTML(data.kind)}</strong>
+        <p>Sender: ${escapeHTML(data.sender)}</p>
+        <pre>${escapeHTML(data.body)}</pre>
+        <small>ID: ${escapeHTML(record.id)}</small><br>
+        <button class="danger">Delete</button>
+      `;
+
+      item.querySelector("button").addEventListener("click", async () => {
+        if (!confirm("এই রেকর্ডটি Delete করবেন?")) return;
+
+        try {
+          await deleteDoc(
+            doc(db, "twixoTestRecords", record.id)
+          );
+          status("রেকর্ড মুছে ফেলা হয়েছে।");
+          await loadRecords();
+        } catch (error) {
+          status("Delete ব্যর্থ: " + error.message);
+        }
+      });
+
+      $("records").appendChild(item);
+    });
+  } catch (error) {
+    console.error(error);
+    $("records").textContent =
+      "ডেটা লোড হয়নি: " + error.message;
+  }
+}
+
+$("saveBtn").addEventListener("click", saveRecord);
+$("refreshBtn").addEventListener("click", loadRecords);
+
+start();
+</script>
+</body>
+</html>
